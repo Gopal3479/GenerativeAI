@@ -3,6 +3,7 @@ import streamlit as st
 import time
 import speech_recognition as sr
 import pyttsx3
+import threading
 from langchain_groq import ChatGroq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -16,66 +17,66 @@ from dotenv import load_dotenv
 import time
 import os
 load_dotenv()  
+# Initialize session state for speech
+if "speaking" not in st.session_state:
+    st.session_state.speaking = False  # Track speech state
+if "engine" not in st.session_state:
+    st.session_state.engine = pyttsx3.init()  # Initialize text-to-speech engine
 
-# Initialize Text-to-Speech engine
-engine = pyttsx3.init()
-
+# Function to speak the response
 def speak(text):
-    """Convert text to speech and speak it."""
-    engine.say(text)
-    engine.runAndWait()
+    """Convert text to speech and read it aloud."""
+    if not st.session_state.speaking:
+        st.session_state.speaking = True
+        def run():
+            st.session_state.engine.say(text)
+            st.session_state.engine.runAndWait()
+            st.session_state.speaking = False
+        threading.Thread(target=run, daemon=True).start()  # Run speech in a separate thread
 
+# Function to stop voice output
+def stop_speech():
+    """Stop voice output immediately."""
+    if st.session_state.speaking:
+        st.session_state.engine.stop()  # Stop the speech engine
+        st.session_state.speaking = False
+
+# Function to listen for voice input
 def listen():
     """Listen for voice input and return recognized text."""
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
-        print("Listening...")
-        audio = recognizer.listen(source)
-    
+        st.write("Listening...")
+        audio = recognizer.listen(source)  # Capture audio from the microphone
     try:
-        # Recognize speech using Google Speech Recognition
-        text = recognizer.recognize_google(audio).lower()
+        text = recognizer.recognize_google(audio).lower()  # Recognize speech using Google API
         return text
     except sr.UnknownValueError:
-        # Handle unrecognized speech
-        return "Sorry, I couldn't understand that."
+        return "Sorry, I couldn't understand that."  # Handle unrecognized speech
     except sr.RequestError:
-        # Handle request errors
-        return "Sorry, my speech service is down."
+        return "Sorry, my speech service is down."  # Handle API request errors
 
-def start_voice_command():
-    """Wait for 'Hey Bot' activation phrase before listening for input."""
-    while True:
-        command = listen()
-        if "hey bot" in command:
-            # Remove activation phrase and return the command
-            return command.replace("hey bot", "").strip()
-
-# Load Azure API Key from environment variables
+# Load Azure API Key
 groq_api_key = os.getenv('GROQ_API_KEY')
 
-# Initialize session state for vector store and document loader
+# Initialize session state for document processing
 if "vector" not in st.session_state:
-    # Initialize embeddings model
-    st.session_state.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    # Load documents from a web source
-    st.session_state.loader = WebBaseLoader("https://titlecapture.com/blog/ai-in-title-insurance/")
-    st.session_state.docs = st.session_state.loader.load()
-    
-    # Split documents into smaller chunks
-    st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.docs[:10])
-    
-    # Create FAISS vector store from documents
-    st.session_state.vectors = FAISS.from_documents(st.session_state.final_documents, st.session_state.embeddings)
+    st.session_state.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")  # Initialize embeddings
+    st.session_state.loader = WebBaseLoader("https://titlecapture.com/blog/ai-in-title-insurance/")  # Load documents from web
+    try:
+        st.session_state.docs = st.session_state.loader.load()  # Load documents
+        st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)  # Split documents into chunks
+        st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.docs[:10])  # Split first 10 documents
+        st.session_state.vectors = FAISS.from_documents(st.session_state.final_documents, st.session_state.embeddings)  # Create vector store
+    except Exception as e:
+        st.error(f"Error loading documents: {str(e)}")  # Handle document loading errors
 
-# Set the title of the Streamlit app
-st.title("RAG using Open Source LLM Models and Azure OpenAI API with Voice")
+st.title("RAG using Open Source LLM Models and Azure OpenAI API with Voice")  # Set the title of the Streamlit app
 
-# Initialize Chat model with API key and model name
+# Initialize Chat model
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="Llama3-8b-8192")
 
-# Define prompt template for the chat model
+# Define prompt template
 prompt_template = ChatPromptTemplate.from_template(
     """
     Answer the questions based on the provided context only.
@@ -92,26 +93,37 @@ document_chain = create_stuff_documents_chain(llm, prompt_template)
 retriever = st.session_state.vectors.as_retriever()
 retrieval_chain = create_retrieval_chain(retriever, document_chain)
 
-# Get input from user (via text or voice)
-use_voice = st.checkbox("Use voice input")
-if use_voice:
-    st.write("Say 'Hey Bot' to start speaking...")
-    user_prompt = start_voice_command()
-else:
-    user_prompt = st.text_input("Input your prompt here")
+# UI Layout
+col1, col2 = st.columns([1, 1])
+with col1:
+    user_prompt = st.text_input("Input your prompt here")  # Text input for user prompt
+with col2:
+    if st.button("Use Voice Input"):
+        st.write("Listening for voice input...")
+        user_prompt = listen()  # Use voice input if button is pressed
 
 if user_prompt:
-    start = time.process_time()
-    # Invoke the retrieval chain with user input
-    response = retrieval_chain.invoke({"input": user_prompt})
-    response_text = response['answer']
-    print("Response time:", time.process_time() - start)
-    # Display response
-    st.write(response_text)
-    # Speak response
-    speak(response_text)
-    # Show similarity search results
-    with st.expander("Document Similarity Search"):
-        for doc in response["context"]:
-            st.write(doc.page_content)
-            st.write("--------------------------------")
+    try:
+        start = time.process_time()
+        response = retrieval_chain.invoke({"input": user_prompt})  # Get response from retrieval chain
+        response_text = response.get('answer', "No valid response found.")
+        print("Response time:", time.process_time() - start)
+        
+        # Display response
+        st.write("### Response:")
+        st.write(response_text)
+        
+        # Speak response
+        speak(response_text)
+        
+        # Show similarity search results
+        with st.expander("Document Similarity Search"):
+            for doc in response.get("context", []):
+                st.write(doc.page_content)
+                st.write("--------------------------------")
+    except RuntimeError as e:
+        st.error(f"An error occurred: {str(e)}")  # Handle runtime errors
+
+# Stop voice button
+if st.button("Stop Voice Output"):
+    stop_speech()  # Stop voice output if button is pressed
