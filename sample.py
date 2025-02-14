@@ -101,8 +101,8 @@ graph_builder.add_edge(START, "chatbot")
 # Compile the state graph
 graph = graph_builder.compile()
 
-# Define user input
-user_input = "Give information about research paper on quantum computing"
+# Define user input 
+user_input = input("Enter query here : ")
 
 # Stream events through the graph
 events = graph.stream(
