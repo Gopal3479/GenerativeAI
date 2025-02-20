@@ -24,3 +24,5 @@ langchain-objectbox
 langchain_google_genai 
 SpeechRecognition
 pyttsx3
+autogen
+PyMuPDF
